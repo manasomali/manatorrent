@@ -1,52 +1,82 @@
 use std::env;
 
-fn decode(mut message: String) -> String {
+fn decode(message: &str) -> (String, String) {
     // TODO: check if message is valid
-    let mut decoded_message: Vec<String> = vec![];
-    let mut rest_of_message: String = "irrelevant".to_string();
-    while rest_of_message != "" {
-        // TODO: dont use unwrap
-        let first_char: char = message.chars().next().unwrap();
-        match first_char {
-            'i' => match message.split_once("e") {
-                Some((main_part, rest_part)) => {
-                    let length: usize = main_part.chars().count() as usize;
-                    decoded_message.push((main_part[1..=length - 1]).to_string());
-                    rest_of_message = rest_part.to_string();
+    match message.chars().next() {
+        Some('i') => {
+            match message.split_once("e") {
+                Some((first_part, rest_part)) => {
+                    match first_part.split_once("i") {
+                        Some((_, number)) => {
+                            println!(" decode int -> {} | {}", first_part, rest_part);
+                            return (number.to_string(), rest_part.to_string());
+                        }
+                        None => {
+                            panic!("Fail decode int. Missing i.");
+                        }
+                    }
                 }
                 None => {
-                    rest_of_message = "".to_string();
+                    panic!("Fail decode int. Missing e.");
                 }
-            },
-            'l' => {
-                let length: usize = message.chars().count() as usize;
-                let mut _inner_message: &str = &message[1..=length - 2];
-                let temp_decoded_message = decode(_inner_message.to_string());
-                decoded_message.push(format!("\"[{}]\"", temp_decoded_message));
-                rest_of_message = "".to_string();
-            }
-            _ => {
-                match message.split_once(":") {
-                    Some((number_part, text_part)) => {
-                        let char_len = number_part.parse::<i32>().unwrap() as usize;
-                        if char_len <= text_part.len() {
-                            decoded_message
-                                .push(format!("\"{}\"", &text_part[0..char_len]).to_string());
-                            rest_of_message = (&text_part[char_len..]).to_string();
-                        } else {
-                            panic!("Invalid message 1");
-                        };
-                    }
-                    None => {
-                        rest_of_message = "".to_string();
-                    }
-                };
             }
         }
-        message = rest_of_message.clone();
+        Some('l') => {
+            let mut decoded_message_list: Vec<String> = vec![];
+            match message.rsplit_once("e") {
+                Some((first_part, rest_part)) => {
+                    println!(" decode list -> {} | {}", first_part, rest_part);
+                    match first_part.split_once("l") {
+                        Some((_, inner_message)) => {
+                            println!(" decode list -> {}", inner_message);
+                            let (mut decoded_message, mut rest_of_message) = decode(inner_message);
+                            decoded_message_list.push(decoded_message);
+                            while rest_of_message != "".to_string() {
+                                (decoded_message, rest_of_message) = decode(&rest_of_message);
+                                decoded_message_list.push(decoded_message)
+                            }
+                            return (
+                                format!("\"[{}]\"", decoded_message_list.join(",")),
+                                rest_part.to_string(),
+                            );
+                        }
+                        None => {
+                            panic!("Fail decode list. Missing e.");
+                        }
+                    }
+                }
+                None => {
+                    println!("{}",message);
+                    panic!("Fail decode list. Missing l.");
+                }
+            }
+        }
+        Some('0'..='9') => {
+            match message.split_once(":") {
+                Some((number_part, text_part)) => {
+                    println!(" decode str -> {} | {}", number_part, text_part);
+                    if let Ok(char_len) = number_part.parse::<usize>() {
+                        if char_len <= text_part.chars().count() {
+                            let decoded_message =
+                                format!("\"{}\"", &text_part[0..char_len]).to_string();
+                            let rest_of_message = (&text_part[char_len..]).to_string();
+                            println!(" decode str -> {}", rest_of_message);
+                            return (decoded_message, rest_of_message);
+                        } else {
+                            panic!("Fail decode str. Length mismatch.");
+                        };
+                    } else {
+                        panic!("Fail decode str. Invalid number.");
+                    }
+                }
+                None => {
+                    println!("{}",message);
+                    panic!("Fail decode str.");
+                }
+            };
+        }
+        _ => todo!()
     }
-    let final_message = decoded_message.join(",");
-    return final_message.to_string();
 }
 
 fn main() {
@@ -57,7 +87,7 @@ fn main() {
 
     match action {
         "decode" => {
-            let decoded_message = decode(message.to_string());
+            let (decoded_message, _) = decode(message);
             println!("{}", decoded_message);
         }
         // TODO encode
@@ -72,43 +102,58 @@ mod tests {
     #[test]
     fn test_bencoded_string() {
         let test_cases = vec![
-            ("5:hello", r#""hello""#),
-            ("5:hello13432143124", r#""hello""#),
-            ("15:123456789012345", r#""123456789012345""#),
-            // ("15:12345", ""), TODO: handle this case
+            ("5:hello", ((r#""hello""#).to_string(), "".to_string())),
+            (
+                "5:hello13432143124",
+                ((r#""hello""#).to_string(), "13432143124".to_string()),
+            ),
+            (
+                "15:123456789012345",
+                ((r#""123456789012345""#).to_string(), "".to_string()),
+            ),
+            //("15:12345", ), // TODO: handle this case panic for now
         ];
 
         for (input, expected) in test_cases {
-            assert_eq!(decode(input.to_string()), expected.to_string());
+            assert_eq!(decode(input), expected);
         }
     }
 
     #[test]
     fn test_bencoded_int() {
         let test_cases = vec![
-            ("i52e", "52"),
-            ("i-52e", "-52"),
-            ("i-123456789012345e", "-123456789012345"),
-            ("i52esadw", "52"),
+            ("i52e", (("52").to_string(), "".to_string())),
+            ("i-52e", (("-52").to_string(), "".to_string())),
+            (
+                "i-123456789012345e",
+                (("-123456789012345").to_string(), "".to_string()),
+            ),
+            ("i52esadw", (("52").to_string(), "sadw".to_string())),
         ];
 
         for (input, expected) in test_cases {
-            assert_eq!(decode(input.to_string()), expected.to_string());
+            assert_eq!(decode(input), expected);
         }
     }
 
     #[test]
     fn test_bencoded_list() {
         let test_cases = vec![
-            ("l5:helloe", r#""["hello"]""#),
-            ("l5:helloi52ee", r#""["hello",52]""#),
-            ("l5:helloi52ee12345", r#""["hello",52]""#),
-            ("l5:helloi52e5:helloe", r#""["hello",52,"hello"]""#),
-            // ("l5:hellol9:innerlistei52e5:helloe", r#""["hello",52,["innerlist"],52,"hello"]""#), TODO: handle this case
+            ("l5:helloe", ((r#""["hello"]""#).to_string(), "".to_string())),
+            ("l5:helloi52ee", ((r#""["hello",52]""#).to_string(), "".to_string())),
+            ("l5:helloi52ee12345", ((r#""["hello",52]""#).to_string(), "12345".to_string())),
+            ("l5:helloi52e5:helloe", ((r#""["hello",52,"hello"]""#).to_string(), "".to_string())),
+            // (
+            //     "l5:hellol9:innerlistei52e5:halloe",
+            //     (
+            //         (r#""["hello",52,["innerlist"],52,"hallo"]""#).to_string(),
+            //         "".to_string(),
+            //     ),
+            // ), // TODO: handle this case
         ];
 
         for (input, expected) in test_cases {
-            assert_eq!(decode(input.to_string()), expected.to_string());
+            assert_eq!(decode(input), expected);
         }
     }
 }
