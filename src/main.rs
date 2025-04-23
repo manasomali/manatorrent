@@ -8,7 +8,7 @@ fn decode(message: &str) -> (String, String) {
                 Some((first_part, rest_part)) => {
                     match first_part.split_once("i") {
                         Some((_, number)) => {
-                            println!(" decode int -> {} | {}", first_part, rest_part);
+                            // println!(" decode int -> number {} | rest_part {}", number, rest_part);
                             return (number.to_string(), rest_part.to_string());
                         }
                         None => {
@@ -23,44 +23,29 @@ fn decode(message: &str) -> (String, String) {
         }
         Some('l') => {
             let mut decoded_message_list: Vec<String> = vec![];
-            match message.rsplit_once("e") {
-                Some((first_part, rest_part)) => {
-                    println!(" decode list -> {} | {}", first_part, rest_part);
-                    match first_part.split_once("l") {
-                        Some((_, inner_message)) => {
-                            println!(" decode list -> {}", inner_message);
-                            let (mut decoded_message, mut rest_of_message) = decode(inner_message);
-                            decoded_message_list.push(decoded_message);
-                            while rest_of_message != "".to_string() {
-                                (decoded_message, rest_of_message) = decode(&rest_of_message);
-                                decoded_message_list.push(decoded_message)
-                            }
-                            return (
-                                format!("\"[{}]\"", decoded_message_list.join(",")),
-                                rest_part.to_string(),
-                            );
-                        }
-                        None => {
-                            panic!("Fail decode list. Missing e.");
-                        }
-                    }
+            let (mut decoded_message, mut rest_of_message) = decode(&message[1..]);
+            decoded_message_list.push(decoded_message);
+            while rest_of_message != "".to_string() {
+                (decoded_message, rest_of_message) = decode(&rest_of_message);
+                if decoded_message == "".to_string() {
+                    break;
                 }
-                None => {
-                    println!("{}",message);
-                    panic!("Fail decode list. Missing l.");
-                }
+                decoded_message_list.push(decoded_message)
             }
+            return (
+                format!("[{}]", decoded_message_list.join(",")),
+                rest_of_message.to_string(),
+            );
         }
         Some('0'..='9') => {
             match message.split_once(":") {
                 Some((number_part, text_part)) => {
-                    println!(" decode str -> {} | {}", number_part, text_part);
                     if let Ok(char_len) = number_part.parse::<usize>() {
                         if char_len <= text_part.chars().count() {
                             let decoded_message =
                                 format!("\"{}\"", &text_part[0..char_len]).to_string();
                             let rest_of_message = (&text_part[char_len..]).to_string();
-                            println!(" decode str -> {}", rest_of_message);
+                            // println!(" decode str -> number_part {} | text_part {} | rest_of_message {}", number_part, text_part, rest_of_message);
                             return (decoded_message, rest_of_message);
                         } else {
                             panic!("Fail decode str. Length mismatch.");
@@ -70,12 +55,12 @@ fn decode(message: &str) -> (String, String) {
                     }
                 }
                 None => {
-                    println!("{}",message);
+                    // println!("{}",message);
                     panic!("Fail decode str.");
                 }
             };
         }
-        _ => todo!()
+        _ => return ("".to_string(), (&message[1..]).to_string()),
     }
 }
 
@@ -139,17 +124,29 @@ mod tests {
     #[test]
     fn test_bencoded_list() {
         let test_cases = vec![
-            ("l5:helloe", ((r#""["hello"]""#).to_string(), "".to_string())),
-            ("l5:helloi52ee", ((r#""["hello",52]""#).to_string(), "".to_string())),
-            ("l5:helloi52ee12345", ((r#""["hello",52]""#).to_string(), "12345".to_string())),
-            ("l5:helloi52e5:helloe", ((r#""["hello",52,"hello"]""#).to_string(), "".to_string())),
-            // (
-            //     "l5:hellol9:innerlistei52e5:halloe",
-            //     (
-            //         (r#""["hello",52,["innerlist"],52,"hallo"]""#).to_string(),
-            //         "".to_string(),
-            //     ),
-            // ), // TODO: handle this case
+            (
+                "l5:helloe",
+                ((r#"["hello"]"#).to_string(), "".to_string()),
+            ),
+            (
+                "l5:helloi52ee",
+                ((r#"["hello",52]"#).to_string(), "".to_string()),
+            ),
+            (
+                "l5:helloi52ee12345",
+                ((r#"["hello",52]"#).to_string(), "12345".to_string()),
+            ),
+            (
+                "l5:helloi52e5:helloe",
+                ((r#"["hello",52,"hello"]"#).to_string(), "".to_string()),
+            ),
+            (
+                "l5:helloi42el9:innerlisti-1eei52e5:halloe",
+                (
+                    (r#"["hello",42,["innerlist",-1],52,"hallo"]"#).to_string(),
+                    "".to_string(),
+                ),
+            ),
         ];
 
         for (input, expected) in test_cases {
