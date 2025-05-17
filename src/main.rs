@@ -1,113 +1,176 @@
-use std::env;
+use clap::{Parser, Subcommand};
+use std::fmt;
+use std::result::Result;
 
-fn decode(message: &str) -> (String, String) {
-    // TODO: check if message is valid
-    match message.chars().next() {
-        Some('i') => match message.split_once("e") {
-            Some((first_part, rest_part)) => match first_part.split_once("i") {
-                Some((_, number)) => {
-                    println!(" decode int -> number {} | rest_part {}", number, rest_part);
-                    return (number.to_string(), rest_part.to_string());
-                }
-                None => {
-                    panic!("Fail decode int. Missing i.");
-                }
-            },
-            None => {
-                panic!("Fail decode int. Missing e.");
-            }
-        },
-        Some('l') => {
-            let mut decoded_message_list: Vec<String> = vec![];
-            let (mut decoded_message, mut rest_of_message) = decode(&message[1..]);
-            decoded_message_list.push(decoded_message);
-            while rest_of_message != "".to_string() {
-                (decoded_message, rest_of_message) = decode(&rest_of_message);
-                if decoded_message == "".to_string() {
-                    break;
-                }
-                decoded_message_list.push(decoded_message)
-            }
-            return (
-                format!("[{}]", decoded_message_list.join(",")),
-                rest_of_message.to_string(),
-            );
-        }
-        Some('d') => {
-            let mut decoded_message_list: Vec<String> = vec![];
-            let (mut decoded_message, mut rest_of_message) = decode(&message[1..]);
-            decoded_message_list.push(decoded_message);
-            while rest_of_message != "".to_string() {
-                (decoded_message, rest_of_message) = decode(&rest_of_message);
-                if decoded_message == "".to_string() {
-                    break;
-                }
-                decoded_message_list.push(decoded_message)
-            }
-            let mut decoded_message_organized: Vec<String> = vec![];
-            if decoded_message_list.len() == 1 {
-                return ("{}".to_string(), rest_of_message.to_string());
-            }
-            let mut count: usize = 0;
-            loop {
-                decoded_message_organized.push(format!(
-                    "{}:{}",
-                    decoded_message_list[count],
-                    decoded_message_list[count + 1]
-                ));
-                count += 2;
-                if count == decoded_message_list.len() {
-                    break;
-                }
-            }
-            return (
-                format!("{{{}}}", decoded_message_organized.join(",")),
-                rest_of_message.to_string(),
-            );
-        }
-        Some('0'..='9') => {
-            match message.split_once(":") {
-                Some((number_part, text_part)) => {
-                    if let Ok(char_len) = number_part.parse::<usize>() {
-                        if char_len <= text_part.chars().count() {
-                            let decoded_message =
-                                format!("\"{}\"", &text_part[0..char_len]).to_string();
-                            let rest_of_message = (&text_part[char_len..]).to_string();
-                            println!(
-                                " decode str -> number_part {} | text_part {} | rest_of_message {}",
-                                number_part, text_part, rest_of_message
-                            );
-                            return (decoded_message, rest_of_message);
-                        } else {
-                            panic!("Fail decode str. Length mismatch.");
-                        };
-                    } else {
-                        panic!("Fail decode str. Invalid number.");
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    #[command(subcommand)]
+    command: Command,
+}
+#[derive(Subcommand, Debug)]
+enum Command {
+    Decode { value: String },
+    Info { torrent: String },
+}
+
+// struct Torrent {
+//     announce: String,
+//     info: TorrentInfo,
+// }
+// struct TorrentInfo {
+//     length: i64,
+//     name: String,
+//     piece_length: i64,
+//     pieces: Vec<u8>,
+// }
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Bencode {
+    Int(i64),
+    Str(String),
+    List(Vec<Bencode>),
+    Dict(BTreeMap<String, Bencode>),
+}
+impl fmt::Display for Bencode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Bencode::Int(n) => write!(f, "{}", n),
+            Bencode::Str(s) => write!(f, "\"{}\"", s),
+            Bencode::List(lst) => {
+                write!(f, "[")?;
+                for (i, item) in lst.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
                     }
+                    write!(f, "{}", item)?;
                 }
-                None => {
-                    println!("{}", message);
-                    panic!("Fail decode str.");
+                write!(f, "]")
+            }
+            Bencode::Dict(dict) => {
+                write!(f, "{{")?;
+                for (i, (key, value)) in dict.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ",")?;
+                    }
+                    write!(f, "\"{}\":{}", key, value)?;
                 }
-            };
+                write!(f, "}}")
+            }
         }
-        _ => return ("".to_string(), (&message[1..]).to_string()),
+    }
+}
+
+fn decode_integer(input: &[u8]) -> Result<(i64, usize), String> {
+    if input.first() != Some(&b'i') {
+        return Err("Integer must start with 'i'".to_string());
+    }
+    let end = input
+        .iter()
+        .position(|&b| b == b'e')
+        .ok_or("Missing 'e' terminator")?;
+    let num_str = std::str::from_utf8(&input[1..end]).map_err(|_| "Invalid UTF-8")?;
+    let num = num_str.parse::<i64>().map_err(|_| "Invalid integer")?;
+    Ok((num, end + 1))
+}
+
+fn decode_list(input: &[u8]) -> Result<(Vec<Bencode>, usize), String> {
+    if input.first() != Some(&b'l') {
+        return Err("List must start with 'l'".to_string());
+    }
+
+    let mut items = Vec::new();
+    let mut pos = 1;
+
+    while input.get(pos) != Some(&b'e') {
+        let (item, consumed) = decode(&input[pos..])?;
+        items.push(item);
+        pos += consumed;
+    }
+
+    Ok((items, pos + 1))
+}
+
+use std::collections::BTreeMap;
+
+fn decode_dict(input: &[u8]) -> Result<(BTreeMap<String, Bencode>, usize), String> {
+    if input.first() != Some(&b'd') {
+        return Err("Dict must start with 'd'".to_string());
+    }
+
+    let mut map = BTreeMap::new();
+    let mut pos = 1;
+
+    while input.get(pos) != Some(&b'e') {
+        let (key, key_len) = decode_string(&input[pos..])?;
+        pos += key_len;
+        let (value, value_len) = decode(&input[pos..])?;
+        pos += value_len;
+        map.insert(key, value);
+    }
+
+    Ok((map, pos + 1))
+}
+
+fn decode_string(input: &[u8]) -> Result<(String, usize), String> {
+    let colon_pos = input
+        .iter()
+        .position(|&b| b == b':')
+        .ok_or("Missing colon")?;
+    let len = std::str::from_utf8(&input[..colon_pos])
+        .map_err(|_| "Invalid UTF-8 in string length")?
+        .parse::<usize>()
+        .map_err(|_| "Invalid length")?;
+
+    let start = colon_pos + 1;
+    let end = start + len;
+    if end > input.len() {
+        return Err("String data out of bounds".to_string());
+    }
+
+    let s = std::str::from_utf8(&input[start..end])
+        .map_err(|_| "Invalid UTF-8 in string content")?
+        .to_string();
+
+    Ok((s, end))
+}
+
+fn decode(input: &[u8]) -> Result<(Bencode, usize), String> {
+    match input.first() {
+        Some(b'i') => {
+            let (n, len) = decode_integer(input)?;
+            Ok((Bencode::Int(n), len))
+        }
+        Some(b'l') => {
+            let (v, len) = decode_list(input)?;
+            Ok((Bencode::List(v), len))
+        }
+        Some(b'd') => {
+            let (m, len) = decode_dict(input)?;
+            Ok((Bencode::Dict(m), len))
+        }
+        Some(b'0'..=b'9') => {
+            let (s, len) = decode_string(input)?;
+            Ok((Bencode::Str(s), len))
+        }
+        _ => Err("Unknown type prefix".to_string()),
     }
 }
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
+    let args = Args::parse();
 
-    let action: &str = &args[1];
-    let message: &str = &args[2];
-
-    match action {
-        "decode" => {
-            let (decoded_message, _) = decode(message);
-            println!("{}", decoded_message);
+    match args.command {
+        Command::Decode { value } => match decode(value.as_bytes()) {
+            Ok((bencode, _)) => println!("{}", bencode),
+            Err(err) => eprintln!("Error: {}", err),
+        },
+        Command::Info { torrent } => {
+            println!("{}", torrent);
+            // let torrent = parse_torrent_file(file_name)?;
+            // println!("Tracker URL: {}", torrent.announce);
+            // println!("Length: {}", torrent.info.length);
         }
-        // TODO encode
-        _ => panic!("Invalid action"),
     }
 }
 
@@ -118,108 +181,137 @@ mod tests {
     #[test]
     fn test_bencoded_string() {
         let test_cases = vec![
-            ("5:hello", ((r#""hello""#).to_string(), "".to_string())),
+            (b"5:hello" as &[u8], Bencode::Str("hello".to_string())),
+            (b"5:hello13432143124", Bencode::Str("hello".to_string())),
             (
-                "5:hello13432143124",
-                ((r#""hello""#).to_string(), "13432143124".to_string()),
+                b"15:123456789012345",
+                Bencode::Str("123456789012345".to_string()),
             ),
-            (
-                "15:123456789012345",
-                ((r#""123456789012345""#).to_string(), "".to_string()),
-            ),
-            //("15:12345", ), // TODO: handle this case panic for now
         ];
 
         for (input, expected) in test_cases {
-            assert_eq!(decode(input), expected);
+            let (result, _rest) = decode(input).expect("Should decode");
+            assert_eq!(result, expected);
         }
     }
 
     #[test]
     fn test_bencoded_int() {
         let test_cases = vec![
-            ("i52e", (("52").to_string(), "".to_string())),
-            ("i-52e", (("-52").to_string(), "".to_string())),
-            (
-                "i-123456789012345e",
-                (("-123456789012345").to_string(), "".to_string()),
-            ),
-            ("i52esadw", (("52").to_string(), "sadw".to_string())),
+            (b"i52e" as &[u8], Bencode::Int(52)),
+            (b"i-52e", Bencode::Int(-52)),
+            (b"i-123456789012345e", Bencode::Int(-123456789012345)),
+            (b"i52esadw", Bencode::Int(52)),
         ];
 
         for (input, expected) in test_cases {
-            assert_eq!(decode(input), expected);
+            let (result, _rest) = decode(input).expect("Should decode");
+            assert_eq!(result, expected);
         }
     }
 
     #[test]
     fn test_bencoded_list() {
         let test_cases = vec![
-            ("l5:helloe", ((r#"["hello"]"#).to_string(), "".to_string())),
             (
-                "l5:helloi52ee",
-                ((r#"["hello",52]"#).to_string(), "".to_string()),
+                b"l5:helloe" as &[u8],
+                Bencode::List(vec![Bencode::Str("hello".to_string())]),
             ),
             (
-                "l5:helloi52ee12345",
-                ((r#"["hello",52]"#).to_string(), "12345".to_string()),
+                b"l5:helloi52ee",
+                Bencode::List(vec![Bencode::Str("hello".to_string()), Bencode::Int(52)]),
             ),
             (
-                "l5:helloi52e5:helloe",
-                ((r#"["hello",52,"hello"]"#).to_string(), "".to_string()),
+                b"l5:helloi52ee12345",
+                Bencode::List(vec![Bencode::Str("hello".to_string()), Bencode::Int(52)]),
             ),
             (
-                "l5:helloi42el9:innerlisti-1eei52e5:halloe",
-                (
-                    (r#"["hello",42,["innerlist",-1],52,"hallo"]"#).to_string(),
-                    "".to_string(),
-                ),
+                b"l5:helloi52e5:helloe",
+                Bencode::List(vec![
+                    Bencode::Str("hello".to_string()),
+                    Bencode::Int(52),
+                    Bencode::Str("hello".to_string()),
+                ]),
+            ),
+            (
+                b"l5:helloi42el9:innerlisti-1eei52e5:halloe",
+                Bencode::List(vec![
+                    Bencode::Str("hello".to_string()),
+                    Bencode::Int(42),
+                    Bencode::List(vec![
+                        Bencode::Str("innerlist".to_string()),
+                        Bencode::Int(-1),
+                    ]),
+                    Bencode::Int(52),
+                    Bencode::Str("hallo".to_string()),
+                ]),
             ),
         ];
 
         for (input, expected) in test_cases {
-            assert_eq!(decode(input), expected);
+            let (result, _rest) = decode(input).expect("Should decode");
+            assert_eq!(result, expected);
         }
     }
 
     #[test]
     fn test_bencoded_dict() {
         let test_cases = vec![
-            (
-                "d3:foo3:bar5:helloi52ee",
-                (r#"{"foo":"bar","hello":52}"#.to_string(), "".to_string()),
-            ),
-            ("de", (r#"{}"#.to_string(), "".to_string())),
-            (
-                "d4:spam4:eggse",
-                (r#"{"spam":"eggs"}"#.to_string(), "".to_string()),
-            ),
-            (
-                "d3:numi123e3:str5:hello4:nestd3:key5:valueee",
-                (
-                    r#"{"num":123,"str":"hello","nest":{"key":"value"}}"#.to_string(),
-                    "".to_string(),
-                ),
-            ),
-            (
-                "d1:ad1:bd1:ci1eee",
-                (r#"{"a":{"b":{"c":1}}}"#.to_string(), "".to_string()),
-            ),
-            (
-                "d4:listl3:one3:two5:threee3:numi99ee",
-                (
-                    r#"{"list":["one","two","three"],"num":99}"#.to_string(),
-                    "".to_string(),
-                ),
-            ),
-            (
-                "d1:xi0e1:yi-42ee",
-                (r#"{"x":0,"y":-42}"#.to_string(), "".to_string()),
-            ),
+            (b"d3:foo3:bar5:helloi52ee" as &[u8], {
+                let mut dict = BTreeMap::new();
+                dict.insert("foo".to_string(), Bencode::Str("bar".to_string()));
+                dict.insert("hello".to_string(), Bencode::Int(52));
+                Bencode::Dict(dict)
+            }),
+            (b"de", Bencode::Dict(BTreeMap::new())),
+            (b"d4:spam4:eggse", {
+                let mut dict = BTreeMap::new();
+                dict.insert("spam".to_string(), Bencode::Str("eggs".to_string()));
+                Bencode::Dict(dict)
+            }),
+            (b"d3:numi123e3:str5:hello4:nestd3:key5:valueee", {
+                let mut nested = BTreeMap::new();
+                nested.insert("key".to_string(), Bencode::Str("value".to_string()));
+
+                let mut dict = BTreeMap::new();
+                dict.insert("num".to_string(), Bencode::Int(123));
+                dict.insert("str".to_string(), Bencode::Str("hello".to_string()));
+                dict.insert("nest".to_string(), Bencode::Dict(nested));
+                Bencode::Dict(dict)
+            }),
+            (b"d1:ad1:bd1:ci1eeee", {
+                let mut level3 = BTreeMap::new();
+                level3.insert("c".to_string(), Bencode::Int(1));
+                let mut level2 = BTreeMap::new();
+                level2.insert("b".to_string(), Bencode::Dict(level3));
+                let mut level1 = BTreeMap::new();
+                level1.insert("a".to_string(), Bencode::Dict(level2));
+                Bencode::Dict(level1)
+            }),
+            (b"d4:listl3:one3:two5:threee3:numi99ee", {
+                let mut dict = BTreeMap::new();
+                dict.insert(
+                    "list".to_string(),
+                    Bencode::List(vec![
+                        Bencode::Str("one".to_string()),
+                        Bencode::Str("two".to_string()),
+                        Bencode::Str("three".to_string()),
+                    ]),
+                );
+                dict.insert("num".to_string(), Bencode::Int(99));
+                Bencode::Dict(dict)
+            }),
+            (b"d1:xi0e1:yi-42ee", {
+                let mut dict = BTreeMap::new();
+                dict.insert("x".to_string(), Bencode::Int(0));
+                dict.insert("y".to_string(), Bencode::Int(-42));
+                Bencode::Dict(dict)
+            }),
         ];
 
         for (input, expected) in test_cases {
-            assert_eq!(decode(input), expected);
+            let (result, _rest) = decode(input).expect("Should decode");
+            assert_eq!(result, expected);
         }
     }
 }
