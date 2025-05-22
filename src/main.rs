@@ -1,5 +1,9 @@
 use clap::{Parser, Subcommand};
+use serde::Deserialize;
 use std::fmt;
+use std::fs::File;
+use std::io::BufReader;
+use std::io::Read;
 use std::result::Result;
 
 #[derive(Parser, Debug)]
@@ -11,19 +15,24 @@ struct Args {
 #[derive(Subcommand, Debug)]
 enum Command {
     Decode { value: String },
-    Info { torrent: String },
+    Info { torrent_filename: String },
 }
 
-// struct Torrent {
-//     announce: String,
-//     info: TorrentInfo,
-// }
-// struct TorrentInfo {
-//     length: i64,
-//     name: String,
-//     piece_length: i64,
-//     pieces: Vec<u8>,
-// }
+#[derive(Debug, Deserialize)]
+struct Torrent {
+    announce: String,
+    // #[serde(rename = "created by")]
+    // created_by: String,
+    info: TorrentInfo,
+}
+#[derive(Debug, Deserialize)]
+struct TorrentInfo {
+    length: u64,
+    // name: String,
+    // #[serde(rename = "piece length")]
+    // piece_length: u64,
+    // pieces: String,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Bencode {
@@ -128,11 +137,12 @@ fn decode_string(input: &[u8]) -> Result<(String, usize), String> {
         return Err("String data out of bounds".to_string());
     }
 
-    let s = std::str::from_utf8(&input[start..end])
-        .map_err(|_| "Invalid UTF-8 in string content")?
-        .to_string();
+    let bytes = &input[start..end];
 
-    Ok((s, end))
+    match std::str::from_utf8(bytes) {
+        Ok(s) => Ok(((s.to_string()), end)),
+        Err(_) => Ok((("".to_string()), end)),
+    }
 }
 
 fn decode(input: &[u8]) -> Result<(Bencode, usize), String> {
@@ -157,6 +167,23 @@ fn decode(input: &[u8]) -> Result<(Bencode, usize), String> {
     }
 }
 
+fn parse_torrent_file(filename: &str) -> Result<Torrent, String> {
+    let file = File::open(filename).map_err(|e| format!("Failed to open file: {}", e))?;
+    let mut reader = BufReader::new(file);
+    let mut buffer = Vec::new();
+    let _ = reader
+        .read_to_end(&mut buffer)
+        .map_err(|e| format!("Failed to read file: {}", e));
+
+    let Ok((bencode, _)) = decode(&buffer) else {
+        return Err("Failed to decode torrent file".to_string());
+    };
+    let parsed: Torrent =
+        serde_json::from_str(&format!("{}", bencode)).expect("Failed to parse JSON");
+
+    Ok(parsed)
+}
+
 fn main() {
     let args = Args::parse();
 
@@ -165,12 +192,13 @@ fn main() {
             Ok((bencode, _)) => println!("{}", bencode),
             Err(err) => eprintln!("Error: {}", err),
         },
-        Command::Info { torrent } => {
-            println!("{}", torrent);
-            // let torrent = parse_torrent_file(file_name)?;
-            // println!("Tracker URL: {}", torrent.announce);
-            // println!("Length: {}", torrent.info.length);
-        }
+        Command::Info { torrent_filename } => match parse_torrent_file(&torrent_filename) {
+            Ok(torrent) => {
+                println!("Tracker URL: {}", torrent.announce);
+                println!("Length: {}", torrent.info.length);
+            }
+            Err(err) => eprintln!("Error: {}", err),
+        },
     }
 }
 
