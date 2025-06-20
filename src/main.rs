@@ -1,5 +1,7 @@
 use clap::{Parser, Subcommand};
 use serde::Deserialize;
+use serde::Serialize;
+use sha1::{Digest, Sha1};
 use std::fmt;
 use std::fs::File;
 use std::io::BufReader;
@@ -18,34 +20,118 @@ enum Command {
     Info { torrent_filename: String },
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct Torrent {
     announce: String,
-    // #[serde(rename = "created by")]
-    // created_by: String,
+    #[serde(skip)]
+    #[serde(rename = "created by")]
+    created_by: String,
     info: TorrentInfo,
+    info_hash_sha1: String,
 }
-#[derive(Debug, Deserialize)]
+impl Torrent {
+    pub fn from_bencode(value: &Bencode) -> Result<Self, String> {
+        if let Bencode::Dict(dict) = value {
+            let Some(announce) = dict.get("announce") else {
+                return Err("announce not found".to_string());
+            };
+            let Some(created_by) = dict.get("created by") else {
+                return Err("created by not found".to_string());
+            };
+            let Some(bencode_info) = dict.get("info") else {
+                return Err("info not found".to_string());
+            };
+            let Bencode::Dict(info) = bencode_info else {
+                return Err("info not found".to_string());
+            };
+            let Some(Bencode::Str(name)) = info.get("name") else {
+                return Err("name not found in info".to_string());
+            };
+            let Some(Bencode::Int(piece_length)) = info.get("piece length") else {
+                return Err("piece_length not found in info".to_string());
+            };
+            let Some(Bencode::RawStr(pieces)) = info.get("pieces") else {
+                return Err("pieces not found in info".to_string());
+            };
+            let Some(Bencode::Int(length)) = info.get("length") else {
+                return Err("length not found in info".to_string());
+            };
+            let mut hasher = Sha1::new();
+            hasher.update(bencode_info.encode());
+            let hash = format!("{:x}", hasher.finalize());
+
+            return Ok(Torrent {
+                announce: announce.to_string(),
+                created_by: created_by.to_string(),
+                info: TorrentInfo {
+                    name: name.to_string(),
+                    piece_length: *piece_length,
+                    pieces: pieces.clone(),
+                    length: *length,
+                },
+                info_hash_sha1: hash,
+            });
+        }
+        Err("Bencode provided is not a dict".to_string())
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Serialize, Deserialize)]
 struct TorrentInfo {
-    length: u64,
-    // name: String,
-    // #[serde(rename = "piece length")]
-    // piece_length: u64,
-    // pieces: String,
+    length: i64,
+    name: String,
+    #[serde(rename = "piece length")]
+    piece_length: i64,
+    pieces: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Bencode {
     Int(i64),
     Str(String),
+    RawStr(Vec<u8>),
     List(Vec<Bencode>),
     Dict(BTreeMap<String, Bencode>),
 }
+impl Bencode {
+    pub fn encode(&self) -> Vec<u8> {
+        match self {
+            Bencode::Int(int) => format!("i{}e", int).into_bytes(),
+            Bencode::Str(str) => format!("{}:{}", str.len(), str).into_bytes(),
+            Bencode::RawStr(vec) => {
+                let mut prefix = format!("{}:", vec.len()).into_bytes();
+                prefix.extend(vec);
+                prefix
+            }
+            Bencode::List(vec) => {
+                let mut byte_string = "l".to_string().into_bytes();
+                for item in vec {
+                    byte_string.extend(item.encode());
+                }
+                byte_string.push(b'e');
+                byte_string
+            }
+            Bencode::Dict(hash_map) => {
+                let mut byte_string = "d".to_string().into_bytes();
+                for (key, value) in hash_map {
+                    byte_string.extend(format!("{}:{}", key.len(), key).into_bytes());
+                    byte_string.extend(value.encode());
+                }
+                byte_string.push(b'e');
+                byte_string
+            }
+        }
+    }
+}
+
 impl fmt::Display for Bencode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Bencode::Int(n) => write!(f, "{}", n),
-            Bencode::Str(s) => write!(f, "\"{}\"", s),
+            Bencode::Str(s) => write!(f, "{}", s),
+            Bencode::RawStr(s) => write!(f, "{}", String::from_utf8_lossy(s)),
             Bencode::List(lst) => {
                 write!(f, "[")?;
                 for (i, item) in lst.iter().enumerate() {
@@ -141,8 +227,28 @@ fn decode_string(input: &[u8]) -> Result<(String, usize), String> {
 
     match std::str::from_utf8(bytes) {
         Ok(s) => Ok(((s.to_string()), end)),
-        Err(_) => Ok((("".to_string()), end)),
+        Err(_) => Err("Invalid UTF-8 in string".to_string()),
     }
+}
+fn decode_raw_string(input: &[u8]) -> Result<(Vec<u8>, usize), String> {
+    let colon_pos = input
+        .iter()
+        .position(|&b| b == b':')
+        .ok_or("Missing colon")?;
+    let len = std::str::from_utf8(&input[..colon_pos])
+        .map_err(|_| "Invalid UTF-8 in string length")?
+        .parse::<usize>()
+        .map_err(|_| "Invalid length")?;
+
+    let start = colon_pos + 1;
+    let end = start + len;
+    if end > input.len() {
+        return Err("String data out of bounds".to_string());
+    }
+
+    let bytes = &input[start..end];
+
+    Ok((bytes.to_vec(), end))
 }
 
 fn decode(input: &[u8]) -> Result<(Bencode, usize), String> {
@@ -160,8 +266,12 @@ fn decode(input: &[u8]) -> Result<(Bencode, usize), String> {
             Ok((Bencode::Dict(m), len))
         }
         Some(b'0'..=b'9') => {
-            let (s, len) = decode_string(input)?;
-            Ok((Bencode::Str(s), len))
+            if let Ok((s, len)) = decode_string(input) {
+                Ok((Bencode::Str(s), len))
+            } else {
+                let (raw_s, len) = decode_raw_string(input)?;
+                Ok((Bencode::RawStr(raw_s), len))
+            }
         }
         _ => Err("Unknown type prefix".to_string()),
     }
@@ -178,8 +288,7 @@ fn parse_torrent_file(filename: &str) -> Result<Torrent, String> {
     let Ok((bencode, _)) = decode(&buffer) else {
         return Err("Failed to decode torrent file".to_string());
     };
-    let parsed: Torrent =
-        serde_json::from_str(&format!("{}", bencode)).expect("Failed to parse JSON");
+    let parsed = Torrent::from_bencode(&bencode).expect("Failed to parse Torrent");
 
     Ok(parsed)
 }
@@ -196,6 +305,7 @@ fn main() {
             Ok(torrent) => {
                 println!("Tracker URL: {}", torrent.announce);
                 println!("Length: {}", torrent.info.length);
+                println!("Info Hash: {}", torrent.info_hash_sha1);
             }
             Err(err) => eprintln!("Error: {}", err),
         },
@@ -341,5 +451,52 @@ mod tests {
             let (result, _rest) = decode(input).expect("Should decode");
             assert_eq!(result, expected);
         }
+    }
+
+    #[test]
+    fn test_encode() {
+        assert_eq!(Bencode::Str("hello".to_string()).encode(), b"5:hello");
+        assert_eq!(
+            Bencode::Str("123456789012345".to_string()).encode(),
+            b"15:123456789012345"
+        );
+        assert_eq!(Bencode::Int(52).encode(), b"i52e");
+        assert_eq!(Bencode::Int(-52).encode(), b"i-52e");
+        assert_eq!(
+            Bencode::Int(-123456789012345).encode(),
+            b"i-123456789012345e"
+        );
+        assert_eq!(
+            Bencode::List(vec![Bencode::Str("hello".to_string())]).encode(),
+            b"l5:helloe"
+        );
+        assert_eq!(
+            {
+                let mut dict = BTreeMap::new();
+                dict.insert("foo".to_string(), Bencode::Str("bar".to_string()));
+                dict.insert("hello".to_string(), Bencode::Int(52));
+                Bencode::Dict(dict).encode()
+            },
+            b"d3:foo3:bar5:helloi52ee"
+        );
+    }
+
+    #[test]
+    fn test_file_dict() {
+        let dict = include_bytes!("../sample.torrent");
+        let Ok((bencode, _)) = decode(dict) else {
+            panic!("Failed to decode torrent file");
+        };
+        let parsed = Torrent::from_bencode(&bencode).expect("Failed to parse Torrent");
+
+        assert_eq!(
+            parsed.announce,
+            "http://bittorrent-test-tracker.codecrafters.io/announce"
+        );
+        assert_eq!(parsed.info.length, 92063);
+        assert_eq!(
+            parsed.info_hash_sha1,
+            "d69f91e6b2ae4c542468d1073a71d4ea13879a7f"
+        );
     }
 }
