@@ -61,6 +61,22 @@ impl Torrent {
             hasher.update(bencode_info.encode());
             let hash = format!("{:x}", hasher.finalize());
 
+            let mut pieces_hash = Vec::<String>::new();
+            let mut count = 0u32;
+            let mut temp_string = String::new();
+            for piece in pieces.iter() {
+                match format!("{:x}", piece).len() {
+                    1 => temp_string = format!("{}{}", temp_string, format!("0{:x}", piece)),
+                    _ => temp_string = format!("{}{}", temp_string, format!("{:x}", piece)),
+                }
+                count += 1;
+                if count == 20 {
+                    pieces_hash.push(temp_string);
+                    temp_string = "".to_string();
+                    count = 0
+                }
+            }
+
             return Ok(Torrent {
                 announce: announce.to_string(),
                 created_by: created_by.to_string(),
@@ -69,6 +85,7 @@ impl Torrent {
                     piece_length: *piece_length,
                     pieces: pieces.clone(),
                     length: *length,
+                    pieces_hash: pieces_hash,
                 },
                 info_hash_sha1: hash,
             });
@@ -85,6 +102,7 @@ struct TorrentInfo {
     #[serde(rename = "piece length")]
     piece_length: i64,
     pieces: Vec<u8>,
+    pieces_hash: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -306,6 +324,11 @@ fn main() {
                 println!("Tracker URL: {}", torrent.announce);
                 println!("Length: {}", torrent.info.length);
                 println!("Info Hash: {}", torrent.info_hash_sha1);
+                println!("Piece Length: {}", torrent.info.piece_length);
+                println!("Piece Hashes:");
+                for piece_hash in torrent.info.pieces_hash.iter() {
+                    println!("{}", piece_hash);
+                }
             }
             Err(err) => eprintln!("Error: {}", err),
         },
