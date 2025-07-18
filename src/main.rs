@@ -61,18 +61,15 @@ impl Torrent {
             hasher.update(bencode_info.encode());
             let hash = format!("{:x}", hasher.finalize());
 
-            let mut pieces_hash = Vec::<String>::new();
+            let mut pieces_hash = Vec::new();
             let mut count = 0u32;
             let mut temp_string = String::new();
             for piece in pieces.iter() {
-                match format!("{:x}", piece).len() {
-                    1 => temp_string = format!("{}{}", temp_string, format!("0{:x}", piece)),
-                    _ => temp_string = format!("{}{}", temp_string, format!("{:x}", piece)),
-                }
+                temp_string = format!("{}{}", temp_string, format!("{:02x}", piece));
                 count += 1;
                 if count == 20 {
                     pieces_hash.push(temp_string);
-                    temp_string = "".to_string();
+                    temp_string = String::new();
                     count = 0
                 }
             }
